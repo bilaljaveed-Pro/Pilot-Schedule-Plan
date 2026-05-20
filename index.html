@@ -283,9 +283,18 @@ input,select,textarea{font-family:inherit}
 
   <nav class="sidebar">
     <div class="gold-line"></div>
-    <div class="sb-brand">
-      <div class="sb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
-      <div class="sb-txt"><h2>Pilot Company</h2><small>Schedule Manager</small></div>
+    <div class="sb-brand" style="flex-direction:column;align-items:flex-start;gap:4px;padding:10px 1.2rem">
+      <div style="display:flex;align-items:center;gap:8px;width:100%">
+        <div class="sb-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg></div>
+        <div class="sb-txt"><h2>Pilot Company</h2><small>Schedule Manager</small></div>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;width:100%;margin-top:4px">
+        <div style="display:flex;align-items:center;gap:5px;cursor:pointer" onclick="openCloudSetup()" title="Cloud Sync Settings">
+          <div id="syncDot" style="width:8px;height:8px;border-radius:50%;background:#666;flex-shrink:0;transition:background .4s;box-shadow:0 0 0 2px rgba(255,255,255,.1)"></div>
+          <span id="syncLabel" style="font-size:9.5px;color:rgba(255,255,255,.4)">Local only</span>
+        </div>
+        <span onclick="manualSync()" style="font-size:9px;color:rgba(255,255,255,.3);cursor:pointer;padding:2px 6px;border-radius:4px;border:1px solid rgba(255,255,255,.1)" title="Sync now">↻ Sync</span>
+      </div>
     </div>
     <div class="sb-nav">
       <div class="sb-sec">Schedules</div>
@@ -599,11 +608,147 @@ input,select,textarea{font-family:inherit}
 <div id="toast"></div>
 
 <script>
-// ════ DB ════
-const DB={
+// ════════════════════════════════════════════════
+// ════  SUPABASE CLOUD SYNC — DB LAYER v2.0  ════
+// ════════════════════════════════════════════════
+
+// CONFIG — filled in by user via setup wizard
+let SB_URL='', SB_KEY='', SB_CLIENT=null;
+let _syncStatus='local'; // 'local' | 'syncing' | 'online' | 'error'
+
+// ── LOCAL CACHE (instant reads, always works offline) ──
+const LC={
   g(k){try{return JSON.parse(localStorage.getItem('psch_'+k))}catch(e){return null}},
   s(k,v){try{localStorage.setItem('psch_'+k,JSON.stringify(v))}catch(e){}}
 };
+
+// ── MAIN DB OBJECT — same interface as before ──
+const DB={
+  g(k){return LC.g(k)},
+  s(k,v){
+    LC.s(k,v);                    // always write local instantly
+    cloudPush(k,v);               // push to cloud async (fire and forget)
+  }
+};
+
+// ── CLOUD CONFIG ──
+function loadCloudConfig(){
+  SB_URL=LC.g('_sb_url')||'';
+  SB_KEY=LC.g('_sb_key')||'';
+  if(SB_URL&&SB_KEY)initSupabase();
+}
+function saveCloudConfig(url,key){
+  LC.s('_sb_url',url);LC.s('_sb_key',key);
+  SB_URL=url;SB_KEY=key;
+  initSupabase();
+}
+
+// ── INIT SUPABASE CLIENT ──
+function initSupabase(){
+  if(!SB_URL||!SB_KEY){setSyncStatus('local');return;}
+  if(typeof window.supabase==='undefined'){
+    var s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2';
+    s.onload=function(){
+      SB_CLIENT=window.supabase.createClient(SB_URL,SB_KEY);
+      setSyncStatus('syncing');
+      cloudPullAll();
+      startRealtime();
+    };
+    s.onerror=function(){setSyncStatus('error');toast('Supabase script failed to load','err')};
+    document.head.appendChild(s);
+  } else {
+    SB_CLIENT=window.supabase.createClient(SB_URL,SB_KEY);
+    setSyncStatus('syncing');
+    cloudPullAll();
+    startRealtime();
+  }
+}
+
+// ── STATUS INDICATOR ──
+function setSyncStatus(s){
+  _syncStatus=s;
+  var el=document.getElementById('syncDot');
+  if(!el)return;
+  var cfg={
+    local:  {c:'#999',  t:'Local only — not connected to cloud'},
+    syncing:{c:'#f9a825',t:'Syncing with cloud…'},
+    online: {c:'#27ae60',t:'✓ Live — all devices in sync'},
+    error:  {c:'#e53935',t:'Cloud error — working offline'}
+  }[s]||{c:'#999',t:''};
+  el.style.background=cfg.c;
+  el.title=cfg.t;
+  var lbl=document.getElementById('syncLabel');
+  if(lbl)lbl.textContent=cfg.t;
+}
+
+// ── PUSH ONE KEY TO CLOUD ──
+async function cloudPush(k,v){
+  if(!SB_CLIENT)return;
+  try{
+    await SB_CLIENT.from('app_data').upsert({key:k,value:JSON.stringify(v)},{onConflict:'key'});
+  }catch(e){setSyncStatus('error');}
+}
+
+// ── PULL ALL KEYS FROM CLOUD ──
+async function cloudPullAll(){
+  if(!SB_CLIENT){setSyncStatus('local');return;}
+  try{
+    setSyncStatus('syncing');
+    var {data,error}=await SB_CLIENT.from('app_data').select('*');
+    if(error)throw error;
+    if(data&&data.length){
+      data.forEach(function(row){
+        try{LC.s(row.key,JSON.parse(row.value));}catch(e){}
+      });
+    }
+    setSyncStatus('online');
+    // Refresh current page
+    if(typeof currentPage!=='undefined'){
+      if(currentPage==='boys')renderList('boys');
+      else if(currentPage==='girls')renderList('girls');
+      else if(currentPage==='supervisors')renderSups();
+      else if(currentPage==='stafflist')renderStaffList();
+      else if(currentPage==='clients')renderClients();
+      else if(currentPage==='attendance')renderAttendance();
+      else if(currentPage==='attreports')renderReports();
+    }
+    toast('Cloud sync complete ✓','ok');
+  }catch(e){
+    setSyncStatus('error');
+    console.error('Cloud pull error:',e);
+  }
+}
+
+// ── REAL-TIME LISTENER — any device saves → all devices update ──
+function startRealtime(){
+  if(!SB_CLIENT)return;
+  SB_CLIENT.channel('app_data_changes')
+    .on('postgres_changes',{event:'*',schema:'public',table:'app_data'},function(payload){
+      try{
+        var row=payload.new||{};
+        if(row.key){LC.s(row.key,JSON.parse(row.value));}
+        setSyncStatus('online');
+        // Silently refresh current view
+        if(typeof currentPage!=='undefined'){
+          if(currentPage==='boys')renderList('boys');
+          else if(currentPage==='girls')renderList('girls');
+          else if(currentPage==='supervisors')renderSups();
+          else if(currentPage==='stafflist')renderStaffList();
+          else if(currentPage==='clients')renderClients();
+          else if(currentPage==='attendance')renderAttendance();
+        }
+      }catch(e){}
+    })
+    .subscribe();
+}
+
+// ── MANUAL SYNC BUTTON ──
+function manualSync(){
+  if(!SB_CLIENT){openCloudSetup();return;}
+  cloudPullAll();
+}
+
 function initDB(){
   if(!DB.g('users'))DB.s('users',[{id:1,username:'admin',password:'admin123',role:'admin'}]);
   if(!DB.g('schedules'))DB.s('schedules',[]);
@@ -1615,6 +1760,44 @@ function addStaffName(){
 }
 function removeStaffName(i){var n=DB.g('staffNames')||[];n.splice(i,1);DB.s('staffNames',n);renderStaffList()}
 
+// ════ CLOUD SETUP MODAL ════
+function openCloudSetup(){
+  document.getElementById('cloudSetupMo').style.display='flex';
+  document.getElementById('csUrl').value=LC.g('_sb_url')||'';
+  document.getElementById('csKey').value=LC.g('_sb_key')||'';
+  updateCloudStatus();
+}
+function closeCloudSetup(){document.getElementById('cloudSetupMo').style.display='none'}
+function updateCloudStatus(){
+  var el=document.getElementById('csStatus');if(!el)return;
+  var cfg={
+    local:  '<span style="color:#999">⚪ Not connected — data stays on this device only</span>',
+    syncing:'<span style="color:#f9a825">🟡 Connecting to cloud…</span>',
+    online: '<span style="color:#27ae60">🟢 Connected — live sync active on all devices</span>',
+    error:  '<span style="color:#e53935">🔴 Connection error — check your URL and API Key</span>'
+  }[_syncStatus]||'';
+  el.innerHTML=cfg;
+}
+function connectCloud(){
+  var url=document.getElementById('csUrl').value.trim().replace(/\/$/,'');
+  var key=document.getElementById('csKey').value.trim();
+  if(!url||!key){toast('Enter both Project URL and API Key','err');return;}
+  if(!url.startsWith('https://')){toast('URL must start with https://','err');return;}
+  saveCloudConfig(url,key);
+  document.getElementById('csStatus').innerHTML='<span style="color:#f9a825">🟡 Connecting…</span>';
+  setTimeout(updateCloudStatus,3500);
+}
+function disconnectCloud(){
+  if(!confirm('Disconnect from cloud? Your local data stays safe on this device.'))return;
+  LC.s('_sb_url','');LC.s('_sb_key','');
+  SB_URL='';SB_KEY='';SB_CLIENT=null;
+  setSyncStatus('local');updateCloudStatus();
+  toast('Disconnected from cloud','ok');
+}
+
+// Init on load
+loadCloudConfig();
+
 // ══════════════════════════════════════════════
 // ════        ATTENDANCE MODULE             ════
 // ══════════════════════════════════════════════
@@ -2137,5 +2320,56 @@ function archiveMonth(){
 }
 
 </script>
+<!-- CLOUD SETUP MODAL -->
+<div id="cloudSetupMo" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;align-items:center;justify-content:center;padding:1rem">
+  <div style="background:#fff;border-radius:14px;width:100%;max-width:560px;box-shadow:0 8px 40px rgba(0,0,0,.25);overflow:hidden">
+    <div style="background:#0b1f3a;padding:1.2rem 1.4rem;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="color:#fff;font-size:16px;font-weight:700">☁️ Cloud Sync Setup</div>
+        <div style="color:rgba(255,255,255,.5);font-size:12px;margin-top:2px">Connect Supabase for real-time sync across all devices</div>
+      </div>
+      <div onclick="closeCloudSetup()" style="color:rgba(255,255,255,.6);cursor:pointer;font-size:20px;padding:4px 8px">✕</div>
+    </div>
+    <div style="padding:1.4rem">
+
+      <!-- Status -->
+      <div id="csStatus" style="margin-bottom:1.2rem;font-size:13px"></div>
+
+      <!-- Step by step guide -->
+      <div style="background:#f0f4ff;border-radius:10px;padding:14px 16px;margin-bottom:1.2rem;font-size:12.5px;line-height:1.8;color:#333">
+        <b style="color:#0b1f3a;font-size:13px">📋 How to set up (free — takes 3 minutes):</b><br>
+        <b>1.</b> Go to <a href="https://supabase.com" target="_blank" style="color:#2563eb">supabase.com</a> → Sign up free → New Project<br>
+        <b>2.</b> Wait ~1 min for project to start → Go to <b>Settings → API</b><br>
+        <b>3.</b> Copy your <b>Project URL</b> and <b>anon/public API Key</b> → paste below<br>
+        <b>4.</b> Go to <b>SQL Editor</b> → run this one command:<br>
+        <div style="background:#1a1a2e;color:#a8d8a8;padding:10px 12px;border-radius:7px;font-family:monospace;font-size:11.5px;margin-top:6px;white-space:pre-wrap">CREATE TABLE IF NOT EXISTS app_data (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE app_data ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Allow all" ON app_data FOR ALL USING (true) WITH CHECK (true);
+ALTER PUBLICATION supabase_realtime ADD TABLE app_data;</div>
+        <b>5.</b> Paste your credentials below and click Connect ✓
+      </div>
+
+      <div style="margin-bottom:12px">
+        <label style="font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Project URL</label>
+        <input id="csUrl" placeholder="https://xxxxxxxxxxxx.supabase.co" style="width:100%;padding:10px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:13px;outline:none;font-family:monospace" onfocus="this.style.borderColor='#2563eb'" onblur="this.style.borderColor='#ddd'">
+      </div>
+      <div style="margin-bottom:16px">
+        <label style="font-size:11px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Anon / Public API Key</label>
+        <input id="csKey" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." style="width:100%;padding:10px 12px;border:1.5px solid #ddd;border-radius:8px;font-size:12px;outline:none;font-family:monospace" onfocus="this.style.borderColor='#2563eb'" onblur="this.style.borderColor='#ddd'">
+      </div>
+
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button onclick="disconnectCloud()" style="padding:9px 16px;border-radius:8px;border:1.5px solid #e53935;background:#fff;color:#e53935;font-size:13px;font-weight:600;cursor:pointer">Disconnect</button>
+        <button onclick="closeCloudSetup()" style="padding:9px 16px;border-radius:8px;border:1.5px solid #ddd;background:#fff;font-size:13px;cursor:pointer">Cancel</button>
+        <button onclick="connectCloud()" style="padding:9px 20px;border-radius:8px;border:none;background:#0b1f3a;color:#fff;font-size:13px;font-weight:700;cursor:pointer">☁️ Connect &amp; Sync</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
