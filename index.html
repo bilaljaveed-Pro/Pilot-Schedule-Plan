@@ -576,6 +576,9 @@ input,select,textarea{font-family:inherit}
 
     <!-- Sticky bottom bar: Add Shift + Save -->
     <div class="add-shift-sticky">
+      <button class="btn btn-outline btn-sm" onclick="toggleAllShifts()" id="hideAllBtn" style="font-size:11px">
+        ▲ Hide All
+      </button>
       <button class="btn btn-gold" onclick="addShift()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         + Add Shift
@@ -911,7 +914,9 @@ function openBuilder(id){
   document.getElementById('bOutside').value='';
   document.getElementById('bGrandTotal').value='';
   document.getElementById('shiftList').innerHTML='';
-  // no beReadyRows section anymore
+  _allHidden=false;
+  var hideAllBtn=document.getElementById('hideAllBtn');
+  if(hideAllBtn)hideAllBtn.textContent='▲ Hide All';
   refreshAvailableStaff();
 
   if(id){
@@ -999,7 +1004,7 @@ function addShift(data){
   document.getElementById('shiftList').appendChild(block);
   ensureDatalist();
   if(d.supervisor){block.querySelector('.s-sup').value=d.supervisor;}
-  if(d.staff&&d.staff.length){d.staff.forEach(function(st){addStaffToShiftEl(block.querySelector('.s-staff-rows'),st.name,st.status)});}
+  if(d.staff&&d.staff.length){d.staff.forEach(function(st){addStaffToShiftEl(block.querySelector('.s-staff-rows'),st.name,st.status,st.ot||'',st.comment||'')});}
   updateShiftHeader(sid);
   setTimeout(function(){block.scrollIntoView({behavior:'smooth',block:'nearest'})},100);
 }
@@ -1074,24 +1079,56 @@ function addStaffToShift(btn){
   addStaffToShiftEl(block.querySelector('.s-staff-rows'));
 }
 
-function addStaffToShiftEl(container,name,status){
+function addStaffToShiftEl(container,name,status,ot,comment){
   var rows=container.querySelectorAll('.staff-row');
   var num=rows.length+1;
   var rid='sr_'+uid();
   var row=document.createElement('div');row.className='staff-row';row.id=rid;
+  row.style.cssText='display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:4px;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:5px 7px';
+
   var normSel=(!status||status==='normal')?' selected':'';
   var dsSel=(status==='ds')?' selected':'';
+  var abSel=(status==='ab')?' selected':'';
+  var dnrSel=(status==='dnr')?' selected':'';
+
+  // Status color coding
+  var statusStyle='padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-weight:700;background:var(--surface);outline:none;cursor:pointer';
+
   row.innerHTML=
-    '<div class="sr-num">'+num+'</div>'+
-    '<input list="staffDL" placeholder="Staff name" value="'+(name||'')+'" style="flex:1">'+
-    '<select class="status-sel">'+
+    '<div class="sr-num" style="width:22px;height:22px;background:var(--navy);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0">'+num+'</div>'+
+    '<input list="staffDL" placeholder="Staff name" value="'+(name||'')+'" style="flex:2;min-width:120px;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-size:12px;background:var(--surface);outline:none">'+
+    '<select class="status-sel" style="'+statusStyle+'" onchange="updateStaffRowColor(this)">'+
       '<option value="normal"'+normSel+'>Normal</option>'+
-      '<option value="ds"'+dsSel+'>DS (Double Shift)</option>'+
+      '<option value="ds"'+dsSel+'>DS</option>'+
+      '<option value="ab"'+abSel+'>Absent</option>'+
+      '<option value="dnr"'+dnrSel+'>DNR</option>'+
     '</select>'+
-    '<div class="iBtn del" onclick="document.getElementById(\''+rid+'\').remove();setTimeout(autoCalcTotals,50)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div>';
+    '<input class="sr-ot" type="number" placeholder="OT hrs" min="0" max="24" value="'+(ot||'')+'" title="Individual overtime hours" style="width:62px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:11px;background:var(--surface);outline:none">'+
+    '<input class="sr-comment" placeholder="Note/comment…" value="'+(comment||'')+'" title="Comment (e.g. cancelled DS, client returned)" style="flex:3;min-width:100px;padding:4px 7px;border:1px solid var(--border);border-radius:5px;font-size:11px;background:var(--surface);outline:none;font-style:italic">'+
+    '<div class="iBtn del" onclick="var p=document.getElementById(\''+rid+'\').parentNode;document.getElementById(\''+rid+'\').remove();renumRows(p);setTimeout(autoCalcTotals,50);setTimeout(refreshAvailableStaff,80)" style="flex-shrink:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></div>';
+
   container.appendChild(row);
+  updateStaffRowColor(row.querySelector('.status-sel'));
   setTimeout(autoCalcTotals,50);
   setTimeout(refreshAvailableStaff,80);
+}
+
+function updateStaffRowColor(sel){
+  if(!sel)return;
+  var row=sel.closest('.staff-row');if(!row)return;
+  var v=sel.value;
+  row.style.borderColor=v==='ab'?'#e53935':v==='dnr'?'#880044':v==='ds'?'#1565c0':'var(--border)';
+  row.style.background=v==='ab'?'#fff5f5':v==='dnr'?'#fdf0f8':v==='ds'?'#f0f6ff':'var(--surface2)';
+  sel.style.color=v==='ab'?'#e53935':v==='dnr'?'#880044':v==='ds'?'#1565c0':'var(--text)';
+}
+
+function renumRows(container){
+  if(!container)return;
+  var rows=container.querySelectorAll('.staff-row');
+  rows.forEach(function(r,i){
+    var num=r.querySelector('.sr-num');
+    if(num)num.textContent=i+1;
+  });
 }
 
 // FOOTER SUPERVISORS (stub — no UI element needed)
@@ -1105,12 +1142,13 @@ function saveSchedule(silent){
   const shifts=[...document.querySelectorAll('#shiftList .shift-block')].map(block=>{
     const staffRows=[...block.querySelectorAll('.s-staff-rows .staff-row')];
     const staff=staffRows.map(r=>({
-      name:r.querySelector('input').value.trim(),
-      status:r.querySelector('select').value
+      name:    r.querySelector('input[list]') ? r.querySelector('input[list]').value.trim() : r.querySelector('input').value.trim(),
+      status:  r.querySelector('.status-sel').value,
+      ot:      r.querySelector('.sr-ot')?r.querySelector('.sr-ot').value.trim():'',
+      comment: r.querySelector('.sr-comment')?r.querySelector('.sr-comment').value.trim():''
     })).filter(s=>s.name);
-    // s-att is now a select
     const attEl=block.querySelector('.s-att');
-    const attNote=attEl?(attEl.tagName==='SELECT'?attEl.value:attEl.value).trim():'';
+    const attNote=attEl?attEl.value.trim():'';
     return{
       pickupTime: block.querySelector('.s-pickup').value.trim(),
       driver:     block.querySelector('.s-driver').value.trim(),
@@ -1124,7 +1162,7 @@ function saveSchedule(silent){
       attNote,    staff
     };
   }).filter(s=>s.venue||s.staff.length);
-  const autoTotal=shifts.reduce((a,sh)=>a+(sh.staff||[]).length,0);
+  const autoTotal=shifts.reduce((a,sh)=>a+(sh.staff||[]).filter(st=>st.status!=='ab'&&st.status!=='dnr').length,0);
   const autoDS=shifts.reduce((a,sh)=>a+(sh.staff||[]).filter(st=>st.status==='ds').length,0);
   const outside=parseInt(document.getElementById('bOutside').value)||0;
   const grandTotal=autoTotal+outside;
@@ -1296,21 +1334,40 @@ function removeSup(i){const s=DB.g('supervisors')||[];s.splice(i,1);DB.s('superv
 function addSupRow(){const s=DB.g('supervisors')||[];s.push({name:'',phone:''});DB.s('supervisors',s);renderSups()}
 function saveSups(){toast('Drivers saved ✓','ok')}
 
+// Hide all / show all shifts
+var _allHidden=false;
+function toggleAllShifts(){
+  var blocks=document.querySelectorAll('#shiftList .shift-block');
+  _allHidden=!_allHidden;
+  blocks.forEach(function(block){
+    var sid=block.id;
+    var body=document.getElementById('sbody_'+sid);
+    var btn=document.getElementById('colbtn_'+sid);
+    if(body){body.style.display=_allHidden?'none':'';}
+    if(btn){btn.textContent=_allHidden?'▼ Show':'▲ Hide';}
+  });
+  var hideAllBtn=document.getElementById('hideAllBtn');
+  if(hideAllBtn)hideAllBtn.textContent=_allHidden?'▼ Show All':'▲ Hide All';
+}
+
 function autoCalcTotals(){
-  const shifts=[...document.querySelectorAll('#shiftList .shift-block')];
-  let total=0,ds=0;
-  shifts.forEach(block=>{
-    block.querySelectorAll('.s-staff-rows .staff-row').forEach(row=>{
-      const name=row.querySelector('input').value.trim();
-      if(name){
+  var shifts=[...document.querySelectorAll('#shiftList .shift-block')];
+  var total=0,ds=0;
+  shifts.forEach(function(block){
+    block.querySelectorAll('.s-staff-rows .staff-row').forEach(function(row){
+      var inp=row.querySelector('input[list]')||row.querySelector('input');
+      var sel=row.querySelector('.status-sel');
+      var name=(inp?inp.value.trim():'');
+      var status=sel?sel.value:'normal';
+      if(name&&status!=='ab'&&status!=='dnr'){
         total++;
-        if(row.querySelector('select').value==='ds')ds++;
+        if(status==='ds')ds++;
       }
     });
   });
-  const outside=parseInt(document.getElementById('bOutside')?.value)||0;
-  const grand=total+outside;
-  const tEl=document.getElementById('bTotal');const dsEl=document.getElementById('bDS');const gEl=document.getElementById('bGrandTotal');
+  var outside=parseInt(document.getElementById('bOutside')?.value)||0;
+  var grand=total+outside;
+  var tEl=document.getElementById('bTotal');var dsEl=document.getElementById('bDS');var gEl=document.getElementById('bGrandTotal');
   if(tEl)tEl.value=total||'';
   if(dsEl)dsEl.value=ds||'';
   if(gEl)gEl.value=grand||'';
@@ -1498,22 +1555,25 @@ function refreshAvailableStaff(){
 }
 
 function pickStaff(name,isDS){
+  // Find the last VISIBLE (not collapsed) shift block
   var blocks=[...document.querySelectorAll('#shiftList .shift-block')];
   if(!blocks.length){toast('Add a shift first','err');return;}
-  var lastBlock=blocks[blocks.length-1];
-  var inputs=[...lastBlock.querySelectorAll('.s-staff-rows .staff-row input')];
-  var targetRow=null;
-  // find empty row
-  var emptyRow=null;
-  lastBlock.querySelectorAll('.s-staff-rows .staff-row').forEach(function(row){
-    if(!emptyRow&&!row.querySelector('input').value.trim())emptyRow=row;
-  });
+  // Prefer last open (non-collapsed) shift
+  var targetBlock=null;
+  for(var i=blocks.length-1;i>=0;i--){
+    var body=blocks[i].querySelector('.shift-block-body');
+    if(body&&body.style.display!=='none'){targetBlock=blocks[i];break;}
+  }
+  if(!targetBlock)targetBlock=blocks[blocks.length-1];
+
+  var container=targetBlock.querySelector('.s-staff-rows');
+  var rows=[...container.querySelectorAll('.staff-row')];
+  var emptyRow=rows.find(function(r){return!r.querySelector('input[list]').value.trim();});
   if(emptyRow){
-    emptyRow.querySelector('input').value=name;
-    if(isDS)emptyRow.querySelector('select').value='ds';
-    targetRow=emptyRow;
+    emptyRow.querySelector('input[list]').value=name;
+    if(isDS){emptyRow.querySelector('.status-sel').value='ds';updateStaffRowColor(emptyRow.querySelector('.status-sel'));}
   } else {
-    addStaffToShiftEl(lastBlock.querySelector('.s-staff-rows'),name,isDS?'ds':'normal');
+    addStaffToShiftEl(container,name,isDS?'ds':'normal');
   }
   if(isDS)toast(name+' added as DS ✓','ok');
   setTimeout(refreshAvailableStaff,100);
@@ -2014,36 +2074,53 @@ function autoFillFromSchedules(){
   if(!ym){toast('Select a month first','err');return;}
   var schedules=(DB.g('schedules')||[]).filter(function(s){return s.date&&s.date.startsWith(ym)});
   if(!schedules.length){toast('No schedules found for '+ym,'err');return;}
+
+  // Ask user: overwrite or only fill blanks?
+  var overwrite=confirm(
+    'OVERWRITE existing attendance entries?\n\n' +
+    'OK = Yes, overwrite all (use this after editing a schedule)\n' +
+    'Cancel = No, only fill empty cells'
+  );
+
   var data=getAtt(ym);
   var filled=0;
   schedules.forEach(function(sch){
     var dk=sch.date.split('-')[2];
     (sch.shifts||[]).forEach(function(sh){
       var code=venueShortCode(sh.venue);
-      var otVal=sh.overtime?String(parseInt(sh.overtime)||0):'';
+      var shiftOT=sh.overtime?String(parseInt(sh.overtime)||0):'';
       (sh.staff||[]).forEach(function(st){
         if(!st.name)return;
+        // Per-staff OT overrides shift OT
+        var staffOT=st.ot?String(parseInt(st.ot)||0):shiftOT;
         if(!data[st.name])data[st.name]={};
         if(!data[st.name][dk])data[st.name][dk]={w:'',ds:'',ot:'',wVenue:'',wDept:'',wStart:'',wEnd:'',dsVenue:'',dsDept:'',dsStart:'',dsEnd:''};
         var cell=data[st.name][dk];
+
+        // Handle absent/DNR
+        if(st.status==='ab'){
+          if(overwrite||!cell.w){cell.w='AB';cell.wVenue='';cell.wDept='';cell.wStart='';cell.wEnd='';filled++;}
+          return;
+        }
+        if(st.status==='dnr'){
+          if(overwrite||!cell.w){cell.w='DNR';cell.wVenue='';cell.wDept='';cell.wStart='';cell.wEnd='';filled++;}
+          return;
+        }
+
         if(st.status==='ds'){
-          if(!cell.ds){
+          if(overwrite||!cell.ds){
             cell.ds=code;
-            cell.dsVenue=sh.venue||'';
-            cell.dsDept=sh.dept||'';
-            cell.dsStart=sh.dutyStart||'';
-            cell.dsEnd=sh.dutyEnd||'';
-            if(otVal&&!cell.ot)cell.ot=otVal;
+            cell.dsVenue=sh.venue||'';cell.dsDept=sh.dept||'';
+            cell.dsStart=sh.dutyStart||'';cell.dsEnd=sh.dutyEnd||'';
+            if(staffOT)cell.ot=staffOT;
             filled++;
           }
         } else {
-          if(!cell.w){
+          if(overwrite||!cell.w){
             cell.w=code;
-            cell.wVenue=sh.venue||'';
-            cell.wDept=sh.dept||'';
-            cell.wStart=sh.dutyStart||'';
-            cell.wEnd=sh.dutyEnd||'';
-            if(otVal)cell.ot=otVal;
+            cell.wVenue=sh.venue||'';cell.wDept=sh.dept||'';
+            cell.wStart=sh.dutyStart||'';cell.wEnd=sh.dutyEnd||'';
+            if(staffOT)cell.ot=staffOT;
             filled++;
           }
         }
@@ -2052,7 +2129,7 @@ function autoFillFromSchedules(){
   });
   setAtt(ym,data);
   renderAttendance();
-  toast('Auto-filled '+filled+' entries from schedules ✓','ok');
+  toast((overwrite?'Overwritten':'Filled')+' '+filled+' entries ✓','ok');
 }
 
 // ── OVERTIME EDIT (inline, click on OT cell) ──
